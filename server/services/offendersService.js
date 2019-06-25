@@ -3,10 +3,9 @@ const logger = require('../../log.js')
 const Status = require('../utils/statusEnum')
 const CatType = require('../utils/catTypeEnum')
 const { isNilOrEmpty } = require('../utils/functionalHelpers')
-const { properCaseName, dateConverter } = require('../utils/utils.js')
+const { properCaseName } = require('../utils/utils.js')
 const moment = require('moment')
 const { sortByDateTimeDesc } = require('./offenderSort.js')
-const config = require('../config')
 
 const dirname = process.cwd()
 
@@ -265,28 +264,15 @@ module.exports = function createOffendersService(nomisClientBuilder, formService
   async function getRecategoriseOffenders(token, agencyId, user, transactionalDbClient) {
     try {
       const nomisClient = nomisClientBuilder(token)
-      const u21From = moment()
-        .subtract(21, 'years')
-        .format('YYYY-MM-DD')
-      const u21To = moment()
-        .subtract(21, 'years')
-        .add(config.recatMarginMonths, 'months')
-        .format('YYYY-MM-DD')
-      const reviewTo = moment()
-        .add(config.recatMarginMonths, 'months')
-        .format('YYYY-MM-DD')
+      const rawResult = await nomisClient.getRecategoriseOffenders(agencyId)
 
-      const [resultsReview, resultsU21] = await Promise.all([
-        nomisClient.getRecategoriseOffenders(agencyId, reviewTo),
-        nomisClient.getPrisonersAtLocation(agencyId, u21From, u21To),
-      ])
-      if (isNilOrEmpty(resultsReview) && isNilOrEmpty(resultsU21)) {
+      if (isNilOrEmpty(rawResult)) {
         logger.info(`No recat offenders found for ${agencyId}`)
         return []
       }
 
-      const decoratedResultsReview = await Promise.all(
-        resultsReview.map(async o => {
+      const decoratedResults = await Promise.all(
+        rawResult.map(async o => {
           const dbRecord = await formService.getCategorisationRecord(o.bookingId, transactionalDbClient)
           if (dbRecord.catType === 'INITIAL') {
             return null
@@ -297,36 +283,15 @@ module.exports = function createOffendersService(nomisClientBuilder, formService
             displayName: `${properCaseName(o.lastName)}, ${properCaseName(o.firstName)}`,
             displayStatus: decorated.displayStatus || 'Not started',
             reason: 'Review due',
-            nextReviewDateDisplay: dateConverter(o.nextReviewDate),
-            dbRecordExists: decorated.dbRecordExists,
-          }
-        })
-      )
-
-      const decoratedResultsU21 = await Promise.all(
-        resultsU21.map(async o => {
-          const dbRecord = await formService.getCategorisationRecord(o.bookingId, transactionalDbClient)
-          if (dbRecord.catType === 'INITIAL') {
-            return null
-          }
-          const decorated = await decorateWithCategorisationData(o, user, nomisClient, dbRecord)
-          return {
-            ...o,
-            displayName: `${properCaseName(o.lastName)}, ${properCaseName(o.firstName)}`,
-            displayStatus: decorated.displayStatus || 'Not started',
-            reason: 'Age 21',
-            nextReviewDateDisplay: moment(o.dateOfBirth, 'YYYY-MM-DD')
-              .add(21, 'years')
-              .format('DD/MM/YYYY'),
             dbRecordExists: decorated.dbRecordExists,
           }
         })
       )
       // TODO: append others in the db with recat started - these will be manual reviews (or possibly risk level changes?)
+      // Also approaching age 21
+      // They wont have a due date shown (it would be after the cutoff)
 
-      return [...decoratedResultsReview, ...decoratedResultsU21]
-        .filter(o => o) // ignore initial cats (set to null)
-        .sort((a, b) => sortByDateTimeDesc(b.nextReviewDateDisplay, a.nextReviewDateDisplay))
+      return decoratedResults.filter(o => o) // ignore initial cats (set to null)
     } catch (error) {
       logger.error(error, 'Error during getUncategorisedOffenders')
       throw error
@@ -588,12 +553,12 @@ module.exports = function createOffendersService(nomisClientBuilder, formService
     getCatAInformation,
     getOffenceHistory,
     isRecat,
+    // just for tests:
+    buildSentenceData,
     createInitialCategorisation,
     createSupervisorApproval,
     getCategorisedOffenders,
     getSecurityReviewedOffenders,
     getPrisonerBackground,
-    // just for tests:
-    buildSentenceData,
   }
 }
